@@ -92,8 +92,9 @@ else
   echo "  -> Skipping IPv6 disable"
 fi
 
-echo "[✓] Isolation complete. System should now be unreachable from remote hosts."
 
+# Additional hardening steps
+echo "[*] Performing additional hardening steps..."
 # Disable CUPS and Postfix
 sudo systemctl disable --now cups.service cups.socket cups.path
 sudo systemctl disable --now postfix
@@ -103,4 +104,7 @@ sudo zypper remove cups postfix
 
 # (Optional) Disable chronyd
 # sudo systemctl disable --now chronyd
+
+
+echo "[✓] Isolation complete. System should now be unreachable from remote hosts."
 
