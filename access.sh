@@ -100,7 +100,7 @@ sudo systemctl disable --now cups.service cups.socket cups.path
 sudo systemctl disable --now postfix
 
 # Optional: Remove packages if not needed
-sudo zypper remove cups postfix
+sudo apt remove cups postfix
 
 # (Optional) Disable chronyd
 # sudo systemctl disable --now chronyd
