@@ -24,8 +24,24 @@ if [[ $EUID -ne 0 ]]; then
   error_exit "This script must be run as root (sudo)."
 fi
 
-# === 1. Check required commands ===
-for cmd in cryptsetup lsblk blkid grub2-mkconfig mkfs.vfat mount umount dd sync grep sed; do
+
+# === 1. Check required commands and install missing packages on Ubuntu ===
+REQUIRED_CMDS=(cryptsetup lsblk blkid grub-mkconfig mkfs.vfat mount umount dd sync grep sed)
+REQUIRED_PKGS=(cryptsetup grub-common dosfstools)
+
+# Detect Ubuntu and install missing packages
+if grep -qi ubuntu /etc/os-release; then
+  echo "[*] Detected Ubuntu. Checking required packages..."
+  for pkg in "${REQUIRED_PKGS[@]}"; do
+    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+      echo "[*] Installing missing package: $pkg"
+      apt-get update && apt-get install -y "$pkg"
+    fi
+  done
+fi
+
+# Check required commands
+for cmd in "${REQUIRED_CMDS[@]}"; do
   if ! command_exists "$cmd"; then
     error_exit "Required command '$cmd' not found. Please install it."
   fi
@@ -97,6 +113,7 @@ sync
 echo "[*] Unmounting USB ..."
 umount "$mountpoint"
 rmdir "$mountpoint"
+
 
 # === 7. Enable GRUB cryptodisk in /etc/default/grub if not already ===
 if ! grep -q '^GRUB_ENABLE_CRYPTODISK=y' /etc/default/grub 2>/dev/null; then
@@ -180,5 +197,9 @@ echo "- The USB key should contain the keyfile ${KEYFILE_NAME} at its root and b
 echo "- On boot, if the USB key is present GRUB will try to unlock UUID ${LUKS_UUID} automatically."
 echo "- If the USB key is not present or cannot unlock, GRUB will fall back to asking for the passphrase."
 echo
+
 echo "Reminder: Keep the USB key and your passphrase safe. Test the keyfile locally before rebooting if you haven't already:"
 echo "  sudo cryptsetup open --test-passphrase --key-file ${KEYFILE_LOCAL} ${LUKS_DEV}"
+
+echo "If you are on Ubuntu, regenerate your GRUB config with:"
+echo "  sudo grub-mkconfig -o /boot/grub/grub.cfg"
