@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # isolate-system.sh - Harden and isolate system from remote access
-# Version: 2.0 (updated for Ubuntu/Debian + improved handling)
+# Version: 2.1 (updated for Ubuntu/Debian/openSUSE + improved handling)
 
 set -euo pipefail
 
@@ -52,10 +52,21 @@ SERVICES_UBUNTU=(
   openssh-server
 )
 
+# extra candidates for openSUSE
+# Note: wickedd and NetworkManager are intentionally excluded to preserve network management
+SERVICES_OPENSUSE=(
+  sshd
+  SuSEfirewall2
+  SuSEfirewall2_init
+  display-manager
+)
+
 # merge according to distro
 SERVICES=("${SERVICES_COMMON[@]}")
 if [[ "$PKG_MANAGER" == "apt" ]]; then
   SERVICES+=("${SERVICES_UBUNTU[@]}")
+elif [[ "$PKG_MANAGER" == "zypper" ]]; then
+  SERVICES+=("${SERVICES_OPENSUSE[@]}")
 fi
 
 # helper to try disabling unit with and without .service suffix
@@ -107,11 +118,13 @@ done
 
 echo "[*] Configuring firewall to block incoming connections..."
 
-# Prefer firewalld, then ufw (common on Ubuntu), then fallback to iptables
-if systemctl is-active --quiet firewalld 2>/dev/null; then
-  echo "  -> Using firewalld"
+# Prefer firewalld (default on openSUSE), then ufw (common on Ubuntu), then fallback to iptables
+if command -v firewall-cmd >/dev/null 2>&1 && (systemctl is-active --quiet firewalld 2>/dev/null || systemctl is-enabled --quiet firewalld 2>/dev/null); then
+  echo "  -> Using firewalld (starting if needed)"
+  systemctl start firewalld 2>/dev/null || true
   firewall-cmd --set-default-zone=drop || true
   firewall-cmd --reload || true
+  echo "  -> Firewalld configured with drop zone (all incoming blocked)"
 elif command -v ufw >/dev/null 2>&1; then
   echo "  -> Using ufw (Ubuntu/Debian)"
   # set defaults then allow loopback and established
@@ -167,13 +180,33 @@ fi
 echo "[*] Performing additional hardening steps..."
 
 # Disable common services (already attempted above, but ensure these are handled)
-echo "  -> Disabling NetworkManager, cloud-init, snapd (if present)"
-for s in NetworkManager cloud-init cloud-init-local cloud-config cloud-final snapd; do
-  if systemctl list-unit-files --no-legend | awk '{print $1}' | grep -qw "^${s}.service$" || systemctl status "$s" >/dev/null 2>&1; then
-    systemctl disable --now "$s" || true
-    systemctl mask "$s" || true
-  fi
-done
+# Note: NetworkManager is intentionally NOT disabled to maintain network connectivity
+if [[ "$PKG_MANAGER" == "zypper" ]]; then
+  echo "  -> Disabling cloud-init, snapd (if present) - openSUSE"
+  echo "  -> Note: Wicked and NetworkManager are preserved for network management"
+  for s in cloud-init cloud-init-local cloud-config cloud-final snapd; do
+    if systemctl list-unit-files --no-legend | awk '{print $1}' | grep -qw "^${s}.service$" || systemctl status "$s" >/dev/null 2>&1; then
+      systemctl disable --now "$s" || true
+      systemctl mask "$s" || true
+    fi
+  done
+  
+  # openSUSE-specific: disable online update services
+  echo "  -> Disabling YaST online updates and automatic refresh"
+  for s in packagekitd zypp-refresh.service zypp-refresh.timer; do
+    systemctl disable --now "$s" 2>/dev/null || true
+    systemctl mask "$s" 2>/dev/null || true
+  done
+else
+  echo "  -> Disabling cloud-init, snapd (if present)"
+  echo "  -> Note: NetworkManager is preserved for network management"
+  for s in cloud-init cloud-init-local cloud-config cloud-final snapd; do
+    if systemctl list-unit-files --no-legend | awk '{print $1}' | grep -qw "^${s}.service$" || systemctl status "$s" >/dev/null 2>&1; then
+      systemctl disable --now "$s" || true
+      systemctl mask "$s" || true
+    fi
+  done
+fi
 
 # Offer package removal (destructive) using detected package manager
 read -r -p "Do you want to remove common network-exposing packages (cups, postfix, samba, avahi)? [y/N]: " remove_pkgs
@@ -183,7 +216,10 @@ if [[ "$remove_pkgs" =~ ^[Yy]$ ]]; then
     apt-get remove -y --purge cups postfix samba avahi-daemon telnetd vsftpd || true
     apt-get autoremove -y || true
   elif [[ "$PKG_MANAGER" == "zypper" ]]; then
-    zypper -n rm cups postfix samba avahi || true
+    echo "  -> Removing packages with zypper (openSUSE)"
+    # openSUSE package names: cups, postfix, samba, avahi, vsftpd, telnet-server
+    zypper -n rm --clean-deps cups postfix samba samba-client avahi avahi-utils vsftpd telnet-server 2>/dev/null || true
+    echo "  -> Package removal complete"
   else
     echo "  -> No known package manager detected; please remove packages manually."
   fi
@@ -195,6 +231,8 @@ fi
 read -r -p "Do you want to bring down all non-loopback network interfaces now? This will disconnect you immediately if over SSH. [y/N]: " down_ifaces
 if [[ "$down_ifaces" =~ ^[Yy]$ ]]; then
   echo "  -> Bringing down non-loopback interfaces"
+  echo "  -> WARNING: NetworkManager/Wicked will remain running but interfaces will be down"
+  
   ip -o link show | awk -F': ' '{print $2}' | grep -v lo | while read -r iface; do
     echo "    -> ip link set $iface down"
     ip link set "$iface" down || true
@@ -213,6 +251,10 @@ done
 
 echo "[✓] Isolation complete. System should now be unreachable from remote hosts (unless you kept interfaces up)."
 echo "Note: If you are connected remotely (SSH), be careful—bringing interfaces down or removing ssh packages can cut your access."
+if [[ "$PKG_MANAGER" == "zypper" ]]; then
+  echo "[openSUSE] Remember: YaST may re-enable some services. Use 'systemctl mask' to prevent this."
+  echo "[openSUSE] Firewalld is the default firewall. Use 'firewall-cmd' to manage rules."
+fi
 
 # NEW: Restrict outbound to only Firefox and VSCode (practical approach)
 read -r -p "Restrict outbound network so only Firefox and VSCode can access network? This will DROP other outbound traffic and may disconnect remote sessions. [y/N]: " restrict_apps
