@@ -306,4 +306,3 @@ if [[ "$restrict_apps" =~ ^[Yy]$ ]]; then
   echo "  -> Restriction applied. Reminder: this allows any process run by $TARGET_USER to access ports 80/443 (approx. Firefox/VSCode)."
   echo "     If you are connected remotely (SSH), you may be disconnected. Have local access available."
 fi
-
